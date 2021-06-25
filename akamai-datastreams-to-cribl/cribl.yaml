@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cribl
+data:
+  cribl.yml: |
+    api:
+      host: 0.0.0.0
+      port: 9000
+    # This setting allows cribl to start working without accepting the license through the UI.
+    #  Unfortunately you still need to fill out the form if you would like to access the UI.
+    license:
+      accepted: true
+    distributed:
+      mode: single
+
+  inputs.yml: |
+    inputs:
+      s3:
+        disabled: false
+        fileFilter: /.*/
+        awsAuthenticationMethod: manual
+        signatureVersion: v4
+        reuseConnections: true
+        rejectUnauthorized: false
+        staleChannelFlushMs: 10000
+        maxMessages: 1
+        visibilityTimeout: 600
+        numReceivers: 1
+        socketTimeout: 300
+        skipOnError: false
+        enableAssumeRole: false
+        enableSQSAssumeRole: false
+        preprocess:
+          disabled: true
+        type: s3
+        queueName: https://sqs.default.svc.cluster.local:80/queue/cribl
+        region: us-east-1
+        awsApiKey: test
+        # username: test - password: test ; not secret
+        awsSecretKey: "#42:AiXQIu0DBiTNJWunKW9nDWurPVG8hYdSy/OOdmad75Y="
+        endpoint: http://s3.default.svc.cluster.local
+
+  outputs.yml: |
+    outputs:
+      prometheus:
+        systemFields:
+          - cribl_host
+          - cribl_wp
+        authType: none
+        metricRenameExpr: name.replace(/\./g, '_')
+        sendMetadata: true
+        concurrency: 32
+        maxPayloadSizeKB: 10240
+        maxPayloadEvents: 0
+        timeoutSec: 30
+        flushPeriodSec: 1
+        onBackpressure: drop
+        metricsFlushPeriodSec: 60
+        type: prometheus
+        url: http://prometheus.default.svc.cluster.local/api/v1/write
+        pipeline: main
+
+  main.yml: |
+    functions:
+      - id: eval
+        filter: "true"
+        disabled: false
+        conf:
+          add: []
+          remove: []
+      - id: aggregation
+        filter: "true"
+        disabled: null
+        conf:
+          passthrough: false
+          preserveGroupBys: false
+          sufficientStatsOnly: false
+          metricsMode: false
+          timeWindow: 10s
+          aggregations:
+            - count()
+          cumulative: false
+      - id: publish_metrics
+        filter: "true"
+        disabled: null
+        conf:
+          overwrite: false
+          dimensions:
+            - "!_*"
+            - "*"
+          removeMetrics: []
+          removeDimensions:
+            - endtime
+            - starttime
+          fields:
+            - metricType: counter
+              inFieldName: count
+              outFieldExpr: null
+    groups: {}
+
+  route.yml: |
+    id: default
+    groups: {}
+    routes:
+      - id: default
+        name: default
+        final: true
+        disabled: false
+        pipeline: main
+        description: ""
+        clones: []
+        filter: "true"
+        output: prometheus
+
+  # I wasn't able to get a test license, so we are using a free trial
+  #licenses.yml: |
+  #  licenses:
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cribl
+  labels:
+    app: cribl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cribl
+  template:
+    metadata:
+      labels:
+        app: cribl
+    spec:
+      containers:
+      - name: app
+        image: cribl/cribl@sha256:4477a087bb37efdc2bdbdc6ea4080b0ffabfa68f832a739ea33a71f772ad51d9 # 3.0.1
+        ports:
+        - containerPort: 9000
+        env:
+        # localstack accepts any key and secret
+        - name: AWS_ACCESS_KEY_ID
+          value: test
+        - name: AWS_SECRET_ACCESS_KEY
+          value: test
+        # cribl doesn't know docker, so we need to copy configs from the configmap to the local partition.
+        #   This is required because cribl writes to it's local config directory on start. This also means
+        #   automated config updates won't work and config updates require a restart.
+        - name: CRIBL_BEFORE_START_CMD_1
+          value: mkdir -p /opt/cribl/local/cribl/pipelines/main
+        - name: CRIBL_BEFORE_START_CMD_2
+          value: cp /config/cribl.yml /opt/cribl/local/cribl/
+        - name: CRIBL_BEFORE_START_CMD_3
+          value: cp /config/inputs.yml /opt/cribl/local/cribl/
+        - name: CRIBL_BEFORE_START_CMD_4
+          value: cp /config/outputs.yml /opt/cribl/local/cribl/
+        - name: CRIBL_BEFORE_START_CMD_5
+          value: cp /config/main.yml /opt/cribl/local/cribl/pipelines/main/conf.yml
+        - name: CRIBL_BEFORE_START_CMD_6
+          value: cp /config/route.yml /opt/cribl/local/cribl/pipelines/
+        volumeMounts:
+        - mountPath: /config
+          name: config
+      volumes:
+      - name: config
+        configMap:
+          name: cribl
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cribl
+spec:
+  selector:
+    app: cribl
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 9000

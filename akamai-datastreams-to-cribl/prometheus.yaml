@@ -1,0 +1,39 @@
+# Prometheus doesn't need a config as we don't mind using the defaults and we plan to use remote_write
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: app
+        image: prom/prometheus@sha256:ca9e612ba1b6382ccf3642e21c9ee328ed4baa49fe84600ead7b7790c139aab4 # v2.27.1
+        ports:
+        - containerPort: 9090
+        args:
+        - --enable-feature=remote-write-receiver
+        - --config.file=/etc/prometheus/prometheus.yml
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 9090
